@@ -1,9 +1,8 @@
 <?php
 /*
 Plugin Name: WP Stack CDN
-Version: 0.3
-Author: Mark Jaquith
-Author URI: http://coveredwebservices.com/
+Version: 1.0
+Author: Mark Jaquith, Matthew Sigley
 */
 
 // Convenience methods
@@ -14,8 +13,8 @@ class WP_Stack_CDN_Plugin extends WP_Stack_Plugin {
 	public static $instance;
 	public $site_domain;
 	public $cdn_domain;
-	public $upload_dir;
-	public $uploads_only;
+	public $production;
+	public $filter_urls;
 	public $extensions;
 
 	public function __construct() {
@@ -25,40 +24,63 @@ class WP_Stack_CDN_Plugin extends WP_Stack_Plugin {
 
 	public function plugins_loaded() {
 		$domain_set_up = get_option( 'wp_stack_cdn_domain' ) || ( defined( 'WP_STACK_CDN_DOMAIN' ) && WP_STACK_CDN_DOMAIN );
-		$production = defined( 'WP_STAGE' ) && WP_STAGE === 'production';
 		$staging = defined( 'WP_STAGE' ) && WP_STAGE === 'staging';
-		$uploads_only = defined( 'WP_STACK_CDN_UPLOADS_ONLY' ) && WP_STACK_CDN_UPLOADS_ONLY;
-		if ( $domain_set_up && !$staging && ( $production || $uploads_only ) )
+		if ( $domain_set_up && !$staging )
 			$this->hook( 'init' );
 	}
 
 	public function init() {
-		$this->uploads_only = apply_filters( 'wp_stack_cdn_uploads_only', defined( 'WP_STACK_CDN_UPLOADS_ONLY' ) ? WP_STACK_CDN_UPLOADS_ONLY : false );
-		$this->extensions = apply_filters( 'wp_stack_cdn_extensions', array( 'jpe?g', 'gif', 'png', 'css', 'bmp', 'js', 'ico', 'svg', 'webp' ) );
-		if ( !is_admin() ) {
-			$this->hook( 'template_redirect' );
-			if ( $this->uploads_only )
-				$this->hook( 'wp_stack_cdn_content', 'filter_uploads_only' );
-			else
-				$this->hook( 'wp_stack_cdn_content', 'filter' );
-			$this->site_domain = parse_url( get_bloginfo( 'url' ), PHP_URL_HOST );
-			$this->cdn_domain = defined( 'WP_STACK_CDN_DOMAIN' ) ? WP_STACK_CDN_DOMAIN : get_option( 'wp_stack_cdn_domain' );
+		if( is_admin() )
+			return; //Don't filter admin pages
+		
+		$this->production = defined( 'WP_STAGE' ) && WP_STAGE === 'production';
+
+		if ( $this->production ) {
+			$this->hook( 'wp_stack_cdn_content', 'filter' );
+		} else {
+			$this->filter_urls = array();
+			$uploads = apply_filters( 'wp_stack_cdn_uploads', defined( 'WP_STACK_CDN_UPLOADS' ) ? WP_STACK_CDN_UPLOADS : false );
+			if ( $uploads ) {
+				$upload_dir = wp_upload_dir();
+				$this->filter_urls[] = $upload_dir['baseurl'];
+			}
+			$theme = apply_filters( 'wp_stack_cdn_theme', defined( 'WP_STACK_CDN_THEME' ) ? WP_STACK_CDN_THEME : false );
+			if ( $theme )
+				$this->filter_urls[] = get_template_directory_uri();
+			
+			$this->filter_urls = apply_filters( 'wp_stack_cdn_filter_urls', $this->filter_urls );
+			if( empty( $this->filter_urls ) )
+				return; //Nothing to filter
+
+			$this->hook( 'wp_stack_cdn_content', 'filter_urls' );
 		}
+		
+		$this->extensions = apply_filters( 'wp_stack_cdn_extensions', array( 'jpe?g', 'gif', 'png', 'css', 'bmp', 'js', 'ico', 'svg', 'webp' ) );
+		$this->site_domain = parse_url( get_bloginfo( 'url' ), PHP_URL_HOST );
+		$this->cdn_domain = defined( 'WP_STACK_CDN_DOMAIN' ) ? WP_STACK_CDN_DOMAIN : get_option( 'wp_stack_cdn_domain' );
+		
+		$this->hook( 'template_redirect' );
+		$this->hook( 'wp_head', 'prefetch' );
 	}
 
-	public function filter_uploads_only( $content ) {
-		$upload_dir = wp_upload_dir();
-		$upload_dir = $upload_dir['baseurl'];
-		$domain = preg_quote( parse_url( $upload_dir, PHP_URL_HOST ), '#' );
-		$path = parse_url( $upload_dir, PHP_URL_PATH );
-		$preg_path = preg_quote( $path, '#' );
+	public function filter_urls( $content ) {
+		foreach( $this->filter_urls as $url ) {
+			$domain = preg_quote( parse_url( $url, PHP_URL_HOST ), '#' );
+			$path = untrailingslashit( parse_url( $url, PHP_URL_PATH ) );
+			$preg_path = preg_quote( $path, '#' );
 
-		// Targeted replace just on uploads URLs
-		return preg_replace( "#([\"'])(https?://{$domain})?$preg_path/((?:(?!\\1]).)+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", '$1//' . $this->cdn_domain . $path . '/$3.$4$5$1', $content );
+			// Targeted replace just on URL
+			$content = preg_replace( "#([\"'])(https?://{$domain})?$preg_path/((?:(?!\\1]).)+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", '$1//' . $this->cdn_domain . $path . '/$3.$4$5$1', $content );
+		}
+		return $content;
 	}
 
-	public function filter( $content ) {
+	public function filter( $content ) { 
 		return preg_replace( "#([\"'])(https?://{$this->site_domain})?/([^/](?:(?!\\1).)+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", '$1//' . $this->cdn_domain . '/$3.$4$5$1', $content );
+	}
+
+	public function prefetch(){
+		echo '<link rel="dns-prefetch" href="//'.$this->cdn_domain.'">';
 	}
 
 	public function template_redirect() {
