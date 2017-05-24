@@ -1,7 +1,7 @@
 <?php
 /*
 Plugin Name: WP Stack CDN
-Version: 1.0
+Version: 1.0.0
 Author: Mark Jaquith, Matthew Sigley
 */
 
@@ -10,22 +10,33 @@ if(!class_exists('WP_Stack_Plugin')){class WP_Stack_Plugin{function hook($h){$p=
 
 // The plugin
 class WP_Stack_CDN_Plugin extends WP_Stack_Plugin {
+	private static $object = null;
+
 	public static $instance;
 	public $site_domain;
 	public $cdn_domain;
+	public $force_https;
 	public $production;
+	public $staging;
 	public $filter_urls;
 	public $extensions;
 
-	public function __construct() {
+	private function __construct() {
 		self::$instance = $this;
 		$this->hook( 'plugins_loaded' );
 	}
 
+	static function &object() {
+		if ( ! self::$object instanceof WP_Stack_CDN_Plugin ) {
+			self::$object = new WP_Stack_CDN_Plugin();
+		}
+		return self::$object;
+	}
+
 	public function plugins_loaded() {
 		$domain_set_up = get_option( 'wp_stack_cdn_domain' ) || ( defined( 'WP_STACK_CDN_DOMAIN' ) && WP_STACK_CDN_DOMAIN );
-		$staging = defined( 'WP_STAGE' ) && WP_STAGE === 'staging';
-		if ( $domain_set_up && !$staging )
+		$this->staging = defined( 'WP_STAGE' ) && WP_STAGE === 'staging';
+		if ( $domain_set_up && !$this->staging )
 			$this->hook( 'init' );
 	}
 
@@ -58,6 +69,7 @@ class WP_Stack_CDN_Plugin extends WP_Stack_Plugin {
 		$this->extensions = apply_filters( 'wp_stack_cdn_extensions', array( 'jpe?g', 'gif', 'png', 'css', 'bmp', 'js', 'ico', 'svg', 'webp' ) );
 		$this->site_domain = parse_url( get_bloginfo( 'url' ), PHP_URL_HOST );
 		$this->cdn_domain = defined( 'WP_STACK_CDN_DOMAIN' ) ? WP_STACK_CDN_DOMAIN : get_option( 'wp_stack_cdn_domain' );
+		$this->force_https = defined( 'WP_STACK_CDN_FORCE_HTTPS' ) ? WP_STACK_CDN_FORCE_HTTPS : true;
 		
 		$this->hook( 'template_redirect' );
 		$this->hook( 'wp_head', 'prefetch' );
@@ -70,12 +82,18 @@ class WP_Stack_CDN_Plugin extends WP_Stack_Plugin {
 			$preg_path = preg_quote( $path, '#' );
 
 			// Targeted replace just on URL
-			$content = preg_replace( "#([\"'])(https?://{$domain})?$preg_path/((?:(?!\\1]).)+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", '$1//' . $this->cdn_domain . $path . '/$3.$4$5$1', $content );
+			$replacement = '$1//' . $this->cdn_domain . $path . '/$3.$4$5$1';
+			if( $this->force_https ) //Force https for HTTP/2 and SPDY support
+				$replacement = '$1https://' . $this->cdn_domain . $path . '/$3.$4$5$1';
+			$content = preg_replace( "#([\"'])(https?://{$domain})?$preg_path/((?:(?!\\1]).)+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", $replacement, $content );
 		}
 		return $content;
 	}
 
 	public function filter( $content ) { 
+		$replacement = '$1//' . $this->cdn_domain . '/$3.$4$5$1';
+		if( $this->force_https ) //Force https for HTTP/2 and SPDY support
+			$replacement = '$1https://' . $this->cdn_domain . '/$3.$4$5$1'; 
 		return preg_replace( "#([\"'])(https?://{$this->site_domain})?/([^/](?:(?!\\1).)+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", '$1//' . $this->cdn_domain . '/$3.$4$5$1', $content );
 	}
 
@@ -88,8 +106,23 @@ class WP_Stack_CDN_Plugin extends WP_Stack_Plugin {
 	}
 
 	public function ob( $contents ) {
-			return apply_filters( 'wp_stack_cdn_content', $contents, $this );
+		return apply_filters( 'wp_stack_cdn_content', $contents, $this );
 	}
 }
 
-new WP_Stack_CDN_Plugin;
+$WP_Stack_CDN_Plugin = WP_Stack_CDN_Plugin::object();
+
+//API Functions
+function WP_Stack_CDN_get_url( $url ) {
+	$WP_Stack_CDN_Plugin = WP_Stack_CDN_Plugin::object();
+	if ( !empty( $WP_Stack_CDN_Plugin->cdn_domain ) && !$WP_Stack_CDN_Plugin->staging ) {
+		list($protocol, $uri) = explode('://', $url, 2);
+		if( $WP_Stack_CDN_Plugin->force_https )
+			$protocol = 'https'; //Force https for HTTP/2 and SPDY support
+		$url = $protocol . '://' . $WP_Stack_CDN_Plugin->cdn_domain;
+		$path_pos = stripos( $uri, '/' );
+		if( false !== $path_pos )
+			$url .= substr( $uri, $path_pos );
+	}
+	return $url;
+}
