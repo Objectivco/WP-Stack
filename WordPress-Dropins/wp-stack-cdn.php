@@ -70,7 +70,7 @@ class WP_Stack_CDN_Plugin extends WP_Stack_Plugin {
 		$this->site_domain = parse_url( get_bloginfo( 'url' ), PHP_URL_HOST );
 		$this->cdn_domain = defined( 'WP_STACK_CDN_DOMAIN' ) ? WP_STACK_CDN_DOMAIN : get_option( 'wp_stack_cdn_domain' );
 		$this->force_https = defined( 'WP_STACK_CDN_FORCE_HTTPS' ) ? WP_STACK_CDN_FORCE_HTTPS : true;
-		
+
 		$this->hook( 'template_redirect' );
 		$this->hook( 'wp_head', 'prefetch' );
 	}
@@ -82,19 +82,19 @@ class WP_Stack_CDN_Plugin extends WP_Stack_Plugin {
 			$preg_path = preg_quote( $path, '#' );
 
 			// Targeted replace just on URL
-			$replacement = '$1//' . $this->cdn_domain . $path . '/$3.$4$5$1';
+			$replacement = '=$1//' . $this->cdn_domain . $path . '/$3.$4$5$1';
 			if( $this->force_https ) //Force https for HTTP/2 and SPDY support
-				$replacement = '$1https://' . $this->cdn_domain . $path . '/$3.$4$5$1';
-			$content = preg_replace( "#([\"'])(https?://{$domain})?$preg_path/((?:(?!\\1]).)+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", $replacement, $content );
+				$replacement = '=$1https://' . $this->cdn_domain . $path . '/$3.$4$5$1';
+			$content = preg_replace( "#=([\"'])(https?://{$domain})?$preg_path/([^(?:\\1)\]\?]+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", $replacement, $content );
 		}
 		return $content;
 	}
 
 	public function filter( $content ) { 
-		$replacement = '$1//' . $this->cdn_domain . '/$3.$4$5$1';
+		$replacement = '=$1//' . $this->cdn_domain . '/$3.$4$5$1';
 		if( $this->force_https ) //Force https for HTTP/2 and SPDY support
-			$replacement = '$1https://' . $this->cdn_domain . '/$3.$4$5$1'; 
-		return preg_replace( "#([\"'])(https?://{$this->site_domain})?/([^/](?:(?!\\1).)+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", '$1//' . $this->cdn_domain . '/$3.$4$5$1', $content );
+			$replacement = '=$1https://' . $this->cdn_domain . '/$3.$4$5$1'; 
+		return preg_replace( "#=([\"'])(https?://{$this->site_domain})?/([^/][^(?:\\1)\?]+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", $replacement, $content );
 	}
 
 	public function prefetch(){
