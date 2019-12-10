@@ -1,7 +1,7 @@
 <?php
 /*
 Plugin Name: WP Stack CDN
-Version: 1.0.0
+Version: 1.0.2
 Author: Mark Jaquith, Matthew Sigley
 */
 
@@ -20,6 +20,7 @@ class WP_Stack_CDN_Plugin extends WP_Stack_Plugin {
 	public $staging;
 	public $filter_urls;
 	public $extensions;
+	public $resource_key;
 
 	private function __construct() {
 		self::$instance = $this;
@@ -70,35 +71,65 @@ class WP_Stack_CDN_Plugin extends WP_Stack_Plugin {
 		$this->site_domain = parse_url( get_bloginfo( 'url' ), PHP_URL_HOST );
 		$this->cdn_domain = defined( 'WP_STACK_CDN_DOMAIN' ) ? WP_STACK_CDN_DOMAIN : get_option( 'wp_stack_cdn_domain' );
 		$this->force_https = defined( 'WP_STACK_CDN_FORCE_HTTPS' ) ? WP_STACK_CDN_FORCE_HTTPS : true;
+		$this->resource_key = defined( 'WP_STACK_CDN_RESOURCE_KEY' ) ? WP_STACK_CDN_RESOURCE_KEY : date('Ymd', current_time('timestamp'));
 
 		$this->hook( 'template_redirect' );
 		$this->hook( 'wp_head', 'prefetch' );
 	}
 
 	public function filter_urls( $content ) {
+		$cache_key = hash( 'sha256', $content ) . '_' . $_SERVER['REQUEST_URI'] . '_' . serialize( $this->filter_urls );
+		$cached_content = wp_cache_get( $cache_key, 'wp_stack_cdn_filter_urls' );
+		if( false !== $cached_content )
+			return $cached_content;
+		
 		foreach( $this->filter_urls as $url ) {
 			$domain = preg_quote( parse_url( $url, PHP_URL_HOST ), '#' );
 			$path = untrailingslashit( parse_url( $url, PHP_URL_PATH ) );
 			$preg_path = preg_quote( $path, '#' );
 
 			// Targeted replace just on URL
-			$replacement = '=$1//' . $this->cdn_domain . $path . '/$3.$4$5$1';
+			// Replace URLs with query strings
+			$replacement = '=$1//' . $this->cdn_domain . $path . '/$3.$4$5&amp;resource_key='.$this->resource_key.'$1';
 			if( $this->force_https ) //Force https for HTTP/2 and SPDY support
-				$replacement = '=$1https://' . $this->cdn_domain . $path . '/$3.$4$5$1';
-			$content = preg_replace( "#=([\"'])(https?://{$domain})?$preg_path/([^(?:\\1)\]\?]+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", $replacement, $content );
+				$replacement = '=$1https://' . $this->cdn_domain . $path . '/$3.$4$5&amp;resource_key='.$this->resource_key.'$1';
+			$content = preg_replace( "#=([\"'])(https?://{$domain})?$preg_path/([^(?:\\1)\]\?]+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))\\1#", $replacement, $content );
+
+			//Replace URLs without query strings
+			$replacement = '=$1//' . $this->cdn_domain . $path . '/$3.$4?&amp;resource_key='.$this->resource_key.'$1';
+			if( $this->force_https ) //Force https for HTTP/2 and SPDY support
+				$replacement = '=$1https://' . $this->cdn_domain . $path . '/$3.$4?&amp;resource_key='.$this->resource_key.'$1';
+			$content = preg_replace( "#=([\"'])(https?://{$domain})?$preg_path/([^(?:\\1)\]\?]+)\.(" . implode( '|', $this->extensions ) . ")(?:\?)?\\1#", $replacement, $content );
 		}
+
+		wp_cache_set( $cache_key, $content, 'wp_stack_cdn_filter_urls', WEEK_IN_SECONDS );
 		return $content;
 	}
 
 	public function filter( $content ) { 
-		$replacement = '=$1//' . $this->cdn_domain . '/$3.$4$5$1';
+		$cache_key = hash( 'sha256', $content ) . '_' . $_SERVER['REQUEST_URI'];
+		$cached_content = wp_cache_get( $cache_key, 'wp_stack_cdn_filter_urls' );
+		if( false !== $cached_content )
+			return $cached_content;
+		
+		// Replace URLs with query strings
+		$replacement = '=$1//' . $this->cdn_domain . '/$3.$4$5&amp;resource_key='.$this->resource_key.'$1';
 		if( $this->force_https ) //Force https for HTTP/2 and SPDY support
-			$replacement = '=$1https://' . $this->cdn_domain . '/$3.$4$5$1'; 
-		return preg_replace( "#=([\"'])(https?://{$this->site_domain})?/([^/][^(?:\\1)\?]+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))?\\1#", $replacement, $content );
+			$replacement = '=$1https://' . $this->cdn_domain . '/$3.$4$5&amp;resource_key='.$this->resource_key.'$1';
+		$content = preg_replace( "#=([\"'])(https?://{$this->site_domain})?/([^/][^(?:\\1)\?]+)\.(" . implode( '|', $this->extensions ) . ")(\?((?:(?!\\1).)+))\\1#", $replacement, $content );
+
+		//Replace URLs without query strings
+		$replacement = '=$1//' . $this->cdn_domain . '/$3.$4?&amp;resource_key='.$this->resource_key.'$1';
+		if( $this->force_https ) //Force https for HTTP/2 and SPDY support
+			$replacement = '=$1https://' . $this->cdn_domain . '/$3.$4?&amp;resource_key='.$this->resource_key.'$1';
+		$content = preg_replace( "#=([\"'])(https?://{$this->site_domain})?/([^/][^(?:\\1)\?]+)\.(" . implode( '|', $this->extensions ) . ")(?:\?)?\\1#", $replacement, $content );
+
+		wp_cache_set( $cache_key, $content, 'wp_stack_cdn_filter', WEEK_IN_SECONDS );
+		return $content;
 	}
 
 	public function prefetch(){
-		echo '<link rel="dns-prefetch" href="//'.$this->cdn_domain.'">';
+		echo '<link rel="preconnect" href="' . ( $this->force_https ? 'https' : '' ) . '//'.$this->cdn_domain.'" crossorigin>' . "\n";
 	}
 
 	public function template_redirect() {
